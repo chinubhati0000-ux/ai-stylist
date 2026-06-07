@@ -1,10 +1,7 @@
 import cv2
-import numpy as np
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
 import mediapipe as mp
+import numpy as np
 
-# Hairstyle recommendations per face shape
 HAIRSTYLE_MAP = {
     "Oval": [
         "Beach waves — any length works",
@@ -63,7 +60,6 @@ SHAPE_DESCRIPTIONS = {
 }
 
 def detect_face_shape(image_path: str) -> dict:
-    # Use legacy solution which still works in 0.10.x
     mp_face_mesh = mp.solutions.face_mesh
     img = cv2.imread(image_path)
 
@@ -100,18 +96,20 @@ def detect_face_shape(image_path: str) -> dict:
         jw = jaw_w / cheek_w
         fl = face_length / cheek_w
 
-        if fl > 1.75:
+        if fl > 1.65:
             shape = "Oblong"
-        elif fw < 0.75 and jw < 0.75:
+        elif fw < 0.78 and jw < 0.78 and fl > 1.3:
             shape = "Diamond"
-        elif fw > 0.85 and jw > 0.85 and fl < 1.35:
+        elif abs(fw - jw) < 0.08 and fl < 1.3:
             shape = "Round"
-        elif fw > 0.85 and jw > 0.85:
+        elif abs(fw - jw) < 0.08 and fl < 1.5:
             shape = "Square"
-        elif fw > jw + 0.15:
+        elif fw > jw + 0.12:
             shape = "Heart"
-        else:
+        elif fl > 1.35:
             shape = "Oval"
+        else:
+            shape = "Round"
 
         return {
             "shape": shape,
