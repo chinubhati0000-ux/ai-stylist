@@ -1,0 +1,6 @@
+@echo off
+echo Starting AI Stylist...
+start cmd /k "cd /d %USERPROFILE%\ai-stylist\backend && venv\Scripts\activate && py -m uvicorn main:app --reload --port 8001"
+timeout /t 3
+start cmd /k "cd /d %USERPROFILE%\ai-stylist\frontend && npm run dev"
+echo Both servers starting...
