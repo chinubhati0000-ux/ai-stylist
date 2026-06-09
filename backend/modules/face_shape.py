@@ -74,7 +74,7 @@ def get_face_landmarks(image_path):
         with mp_face_mesh.FaceMesh(
             static_image_mode=True,
             max_num_faces=1,
-            min_detection_confidence=0.3
+            min_detection_confidence=0.1
         ) as face_mesh:
             results = face_mesh.process(img_rgb)
             if results.multi_face_landmarks:
