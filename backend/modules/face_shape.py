@@ -1,5 +1,4 @@
 import cv2
-import mediapipe as mp
 import numpy as np
 
 HAIRSTYLE_MAP = {
@@ -59,66 +58,109 @@ SHAPE_DESCRIPTIONS = {
     "Oblong":  "Your face is noticeably longer than wide with a long straight cheek line.",
 }
 
-def detect_face_shape(image_path: str) -> dict:
-    mp_face_mesh = mp.solutions.face_mesh
+def get_face_landmarks(image_path):
+    """Try both old and new MediaPipe API"""
     img = cv2.imread(image_path)
-
     if img is None:
         raise ValueError("Could not read image")
 
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     h, w = img.shape[:2]
 
-    with mp_face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        min_detection_confidence=0.3
-    ) as face_mesh:
-        results = face_mesh.process(img_rgb)
+    # Try old API first (mp.solutions)
+    try:
+        import mediapipe as mp
+        mp_face_mesh = mp.solutions.face_mesh
+        with mp_face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            min_detection_confidence=0.3
+        ) as face_mesh:
+            results = face_mesh.process(img_rgb)
+            if results.multi_face_landmarks:
+                return results.multi_face_landmarks[0].landmark, h, w
+    except AttributeError:
+        pass
 
-        if not results.multi_face_landmarks:
-            raise ValueError("No face detected — use a clear front-facing photo")
+    # Try new API (FaceLandmarker)
+    try:
+        import mediapipe as mp
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
+        import urllib.request
+        import os
+        import tempfile
 
-        lm = results.multi_face_landmarks[0].landmark
+        model_path = os.path.join(tempfile.gettempdir(), "face_landmarker.task")
 
-        def pt(idx):
-            return np.array([lm[idx].x * w, lm[idx].y * h])
+        if not os.path.exists(model_path):
+            urllib.request.urlretrieve(
+                "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                model_path
+            )
 
-        def dist(a, b):
-            return float(np.linalg.norm(pt(a) - pt(b)))
+        base_options = python.BaseOptions(model_asset_path=model_path)
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            num_faces=1
+        )
+        detector = vision.FaceLandmarker.create_from_options(options)
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB,
+            data=img_rgb
+        )
+        result = detector.detect(mp_image)
 
-        forehead_w  = dist(54, 284)
-        jaw_w       = dist(172, 397)
-        cheek_w     = dist(234, 454)
-        face_length = dist(10, 152)
+        if result.face_landmarks:
+            return result.face_landmarks[0], h, w
+    except Exception:
+        pass
 
-        fw = forehead_w / cheek_w
-        jw = jaw_w / cheek_w
-        fl = face_length / cheek_w
+    raise ValueError("No face detected — use a clear front-facing photo")
 
-        if fl > 1.65:
-            shape = "Oblong"
-        elif fw < 0.78 and jw < 0.78 and fl > 1.3:
-            shape = "Diamond"
-        elif abs(fw - jw) < 0.08 and fl < 1.3:
-            shape = "Round"
-        elif abs(fw - jw) < 0.08 and fl < 1.5:
-            shape = "Square"
-        elif fw > jw + 0.12:
-            shape = "Heart"
-        elif fl > 1.35:
-            shape = "Oval"
-        else:
-            shape = "Round"
 
-        return {
-            "shape": shape,
-            "description": SHAPE_DESCRIPTIONS[shape],
-            "measurements": {
-                "forehead_ratio": round(fw, 3),
-                "jaw_ratio":      round(jw, 3),
-                "length_ratio":   round(fl, 3),
-            },
-            "hairstyle_recommendations": HAIRSTYLE_MAP[shape],
-            "neckline_recommendations":  NECKLINE_MAP[shape],
-        }
+def detect_face_shape(image_path: str) -> dict:
+    landmarks, h, w = get_face_landmarks(image_path)
+
+    def pt(idx):
+        lm = landmarks[idx]
+        return np.array([lm.x * w, lm.y * h])
+
+    def dist(a, b):
+        return float(np.linalg.norm(pt(a) - pt(b)))
+
+    forehead_w  = dist(54, 284)
+    jaw_w       = dist(172, 397)
+    cheek_w     = dist(234, 454)
+    face_length = dist(10, 152)
+
+    fw = forehead_w / cheek_w
+    jw = jaw_w / cheek_w
+    fl = face_length / cheek_w
+
+    if fl > 1.65:
+        shape = "Oblong"
+    elif fw < 0.78 and jw < 0.78 and fl > 1.3:
+        shape = "Diamond"
+    elif abs(fw - jw) < 0.08 and fl < 1.3:
+        shape = "Round"
+    elif abs(fw - jw) < 0.08 and fl < 1.5:
+        shape = "Square"
+    elif fw > jw + 0.12:
+        shape = "Heart"
+    elif fl > 1.35:
+        shape = "Oval"
+    else:
+        shape = "Round"
+
+    return {
+        "shape": shape,
+        "description": SHAPE_DESCRIPTIONS[shape],
+        "measurements": {
+            "forehead_ratio": round(fw, 3),
+            "jaw_ratio":      round(jw, 3),
+            "length_ratio":   round(fl, 3),
+        },
+        "hairstyle_recommendations": HAIRSTYLE_MAP[shape],
+        "neckline_recommendations":  NECKLINE_MAP[shape],
+    }
