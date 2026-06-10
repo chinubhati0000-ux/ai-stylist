@@ -1,4 +1,4 @@
-import cv2
+code = '''import cv2
 import numpy as np
 
 HAIRSTYLE_MAP = {
@@ -109,3 +109,8 @@ def detect_face_shape(image_path: str) -> dict:
         "hairstyle_recommendations": HAIRSTYLE_MAP[shape],
         "neckline_recommendations": NECKLINE_MAP[shape],
     }
+'''
+
+with open("modules/face_shape.py", "w") as f:
+    f.write(code)
+print("face_shape.py written successfully!")
