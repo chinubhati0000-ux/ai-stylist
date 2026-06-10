@@ -58,109 +58,93 @@ SHAPE_DESCRIPTIONS = {
     "Oblong":  "Your face is noticeably longer than wide with a long straight cheek line.",
 }
 
-def get_face_landmarks(image_path):
-    """Try both old and new MediaPipe API"""
+def detect_face_shape(image_path: str) -> dict:
     img = cv2.imread(image_path)
     if img is None:
         raise ValueError("Could not read image")
 
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = img.shape[:2]
 
-    # Try old API first (mp.solutions)
+    # Try MediaPipe first
     try:
         import mediapipe as mp
         mp_face_mesh = mp.solutions.face_mesh
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
         with mp_face_mesh.FaceMesh(
             static_image_mode=True,
             max_num_faces=1,
             min_detection_confidence=0.1
         ) as face_mesh:
             results = face_mesh.process(img_rgb)
+
             if results.multi_face_landmarks:
-                return results.multi_face_landmarks[0].landmark, h, w
-    except AttributeError:
-        pass
+                lm = results.multi_face_landmarks[0].landmark
 
-    # Try new API (FaceLandmarker)
-    try:
-        import mediapipe as mp
-        from mediapipe.tasks import python
-        from mediapipe.tasks.python import vision
-        import urllib.request
-        import os
-        import tempfile
+                def pt(idx):
+                    return np.array([lm[idx].x * w, lm[idx].y * h])
 
-        model_path = os.path.join(tempfile.gettempdir(), "face_landmarker.task")
+                def dist(a, b):
+                    return float(np.linalg.norm(pt(a) - pt(b)))
 
-        if not os.path.exists(model_path):
-            urllib.request.urlretrieve(
-                "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-                model_path
-            )
+                forehead_w  = dist(54, 284)
+                jaw_w       = dist(172, 397)
+                cheek_w     = dist(234, 454)
+                face_length = dist(10, 152)
 
-        base_options = python.BaseOptions(model_asset_path=model_path)
-        options = vision.FaceLandmarkerOptions(
-            base_options=base_options,
-            num_faces=1
-        )
-        detector = vision.FaceLandmarker.create_from_options(options)
-        mp_image = mp.Image(
-            image_format=mp.ImageFormat.SRGB,
-            data=img_rgb
-        )
-        result = detector.detect(mp_image)
+                fw = forehead_w / cheek_w
+                jw = jaw_w / cheek_w
+                fl = face_length / cheek_w
 
-        if result.face_landmarks:
-            return result.face_landmarks[0], h, w
+                shape = classify_shape(fw, jw, fl)
+
+                return {
+                    "shape": shape,
+                    "description": SHAPE_DESCRIPTIONS[shape],
+                    "measurements": {
+                        "forehead_ratio": round(fw, 3),
+                        "jaw_ratio": round(jw, 3),
+                        "length_ratio": round(fl, 3),
+                    },
+                    "hairstyle_recommendations": HAIRSTYLE_MAP[shape],
+                    "neckline_recommendations": NECKLINE_MAP[shape],
+                }
     except Exception:
         pass
 
-    raise ValueError("No face detected — use a clear front-facing photo")
+    # Fallback — use OpenCV Haar cascade face detection
+    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    face_cascade = cv2.CascadeClassifier(cascade_path)
 
+    faces = face_cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30)
+    )
 
-def detect_face_shape(image_path: str) -> dict:
-    landmarks, h, w = get_face_landmarks(image_path)
-
-    def pt(idx):
-        lm = landmarks[idx]
-        return np.array([lm.x * w, lm.y * h])
-
-    def dist(a, b):
-        return float(np.linalg.norm(pt(a) - pt(b)))
-
-    forehead_w  = dist(54, 284)
-    jaw_w       = dist(172, 397)
-    cheek_w     = dist(234, 454)
-    face_length = dist(10, 152)
-
-    fw = forehead_w / cheek_w
-    jw = jaw_w / cheek_w
-    fl = face_length / cheek_w
-
-    if fl > 1.65:
-        shape = "Oblong"
-    elif fw < 0.78 and jw < 0.78 and fl > 1.3:
-        shape = "Diamond"
-    elif abs(fw - jw) < 0.08 and fl < 1.3:
-        shape = "Round"
-    elif abs(fw - jw) < 0.08 and fl < 1.5:
-        shape = "Square"
-    elif fw > jw + 0.12:
-        shape = "Heart"
-    elif fl > 1.35:
-        shape = "Oval"
+    if len(faces) == 0:
+        # Last resort — assume face fills the image
+        fx, fy, fw_px, fh_px = 0, 0, w, h
     else:
-        shape = "Round"
+        fx, fy, fw_px, fh_px = faces[0]
 
-    return {
-        "shape": shape,
-        "description": SHAPE_DESCRIPTIONS[shape],
-        "measurements": {
-            "forehead_ratio": round(fw, 3),
-            "jaw_ratio":      round(jw, 3),
-            "length_ratio":   round(fl, 3),
-        },
-        "hairstyle_recommendations": HAIRSTYLE_MAP[shape],
-        "neckline_recommendations":  NECKLINE_MAP[shape],
-    }
+    # Estimate ratios from bounding box
+    face_w = float(fw_px)
+    face_h = float(fh_px)
+
+    # Estimate proportions
+    fw = 0.85   # forehead ratio estimate
+    jw = 0.75   # jaw ratio estimate
+    fl = face_h / face_w if face_w > 0 else 1.4
+
+    # Refine using face region
+    face_region = gray[fy:fy+fh_px, fx:fx+fw_px]
+    if face_region.size > 0:
+        top_third    = face_region[:fh_px//3, :]
+        bottom_third = face_region[2*fh_px//3:, :]
+
+        top_w    = np.sum(top_third > 100)
+        bottom_w = np.sum(bottom_third > 100)
+
+        if top_w > 0 and bottom_w > 0:
+            ratio = top_w / bottom_w
+            if ratio > 1.2:
